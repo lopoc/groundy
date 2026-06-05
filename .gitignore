@@ -1,0 +1,70 @@
+# Secrets / local config
+.env
+.env.*
+!.env.example
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+.Python
+build/
+dist/
+downloads/
+eggs/
+.eggs/
+sdist/
+wheels/
+*.egg-info/
+*.egg
+MANIFEST
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.cache
+.tox/
+.nox/
+
+# Type checkers / linters
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# uv lockfile — not committed for this library (resolution is left to consumers)
+uv.lock
+
+# Jupyter
+.ipynb_checkpoints/
+
+# sentence-transformers / HF model cache (can be large)
+.cache/huggingface/
+
+# IDEs / editors
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Claude Code
+CLAUDE.md
+.claude/

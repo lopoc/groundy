@@ -1,0 +1,5 @@
+# Runtime dependencies (mirrors [project.dependencies] in pyproject.toml).
+# This is a pip fallback; the canonical, locked install is `uv sync`.
+anthropic>=0.25.0
+sentence-transformers>=2.7.0
+loguru>=0.7.0
