@@ -9,10 +9,10 @@ description = "Hallucination detection for LLMs via semantic consistency checkin
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-keywords = ["llm", "hallucination", "ai", "agents", "semantic-cache", "anthropic"]
+keywords = ["llm", "hallucination", "ai", "agents", "semantic-cache", "openai"]
 
 dependencies = [
-    "anthropic>=0.25.0",
+    "openai>=1.0.0",
     "sentence-transformers>=2.7.0",
     "loguru>=0.7.0",
 ]

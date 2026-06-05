@@ -20,23 +20,39 @@ from __future__ import annotations
 import functools
 import itertools
 import json
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Protocol, runtime_checkable
 
-import anthropic
+from openai import OpenAI
 from loguru import logger
 
 from groundy.prompts import REFORMULATION_SYSTEM, REFORMULATION_USER
 
-# Model used to generate reformulations. Defaults to Sonnet because reproducibility
-# matters here (temperature=0) and newer Opus (claude-opus-4-8) rejects the
-# `temperature` parameter outright — you can't pin it to 0 there. Override with model=.
-DEFAULT_MODEL = "claude-sonnet-4-6"
+# --- Reformulation provider config -------------------------------------------------
+# Reformulation is the library's OWN LLM call — kept deliberately separate from the call
+# you answer with (answer_fn), so the two tasks can run on different models AND providers
+# (e.g. reformulate on a cheap/fast model, answer on a stronger one). Nothing is
+# hardcoded: model, base_url and api_key all resolve from the environment. Resolution
+# order, highest priority first:
+#     explicit kwarg  →  GROUNDY_REFORMULATION_*  →  OPENAI_*  →  built-in fallback
+# base_url=None means "OpenAI proper"; api_key=None lets the OpenAI SDK find OPENAI_API_KEY.
+FALLBACK_REFORMULATION_MODEL = "gpt-4o-mini"
+
+
+def _env_first(*names: str) -> Optional[str]:
+    """Return the first non-empty value among the named environment variables, else None."""
+    for name in names:
+        value = os.getenv(name)
+        if value:
+            return value
+    return None
+
 
 # Deterministic by default: the reformulation call uses temperature 0 so the rephrasings
 # are stable and reproducible across runs. Set temperature=None to omit the parameter
-# (required for models that reject it, e.g. claude-opus-4-8).
+# (required for models that reject it, e.g. some reasoning models).
 TEMPERATURE = 0.0
 
 # Returned (and cached) in place of an answer when the model disagrees with itself.
@@ -137,18 +153,31 @@ class GroundyChecker:
         reasonable default; lower for exploratory use, higher for critical paths.
     backend : str
         'embeddings' (default) or 'llm_judge' (stub, ready for later).
-    model : str
-        Anthropic model used by the *default* reformulator. Ignored if you pass
-        ``reformulate_fn``.
+    model : str | None
+        OpenAI-compatible model for the *default* reformulator — the reformulation task
+        only; your answers use whatever model ``answer_fn`` calls, independently. None
+        (default) reads ``GROUNDY_REFORMULATION_MODEL``, else falls back to ``gpt-4o-mini``.
+        Ignored if you pass ``reformulate_fn``.
     temperature : float | None
         Temperature for the *default* reformulator. Defaults to 0.0 for reproducible
         rephrasings. Set to None to omit the parameter — required for models that
-        reject it (e.g. claude-opus-4-8). Ignored if you pass ``reformulate_fn``.
+        reject it (e.g. some reasoning models). Ignored if you pass ``reformulate_fn``.
+    base_url : str | None
+        Base URL for the *default* reformulator's OpenAI-compatible endpoint. None (default)
+        reads ``GROUNDY_REFORMULATION_BASE_URL`` then ``OPENAI_BASE_URL``, else hits OpenAI.
+        Set it (here or via env) to reformulate on OpenRouter, Groq, Featherless, a local
+        server, … — a *different provider* than your answer call. Ignored if you pass
+        ``reformulate_fn``.
+    api_key : str | None
+        API key for the *default* reformulator. None (default) reads
+        ``GROUNDY_REFORMULATION_API_KEY`` then ``OPENAI_API_KEY``. Lets the reformulation
+        provider authenticate with a different key than your answer call. Ignored if you
+        pass ``reformulate_fn``.
     reformulate_fn : Callable[[str, int], list[str]] | None
         Bring your own reformulator and the library touches **no** vendor SDK. It takes
         ``(query, k)`` and returns ``k`` semantically-equivalent rephrasings. When None
-        (default), an Anthropic-backed reformulator is used (needs ANTHROPIC_API_KEY).
-        Use this to run on any vendor (OpenAI, LiteLLM, a local model, …).
+        (default), an OpenAI-compatible reformulator is used (needs OPENAI_API_KEY).
+        Use this to run on any vendor (LiteLLM, a local model, …).
     verify_prompt : str | None
         Prepended to each query when producing the *verify* answers (those compared for
         consistency), to force terse answers and a clean signal. The *served* answer is
@@ -161,8 +190,10 @@ class GroundyChecker:
         n: int = 5,
         threshold: float = 0.75,
         backend: str = "embeddings",
-        model: str = DEFAULT_MODEL,
+        model: Optional[str] = None,
         temperature: Optional[float] = TEMPERATURE,
+        base_url: Optional[str] = None,
+        api_key: Optional[str] = None,
         reformulate_fn: Optional[Callable[[str, int], list[str]]] = None,
         verify_prompt: Optional[str] = VERIFY_PROMPT,
     ):
@@ -173,17 +204,30 @@ class GroundyChecker:
         self.n = n
         self.threshold = threshold
         self.backend = backend
-        self.model = model
+        # Reformulation provider config — resolved kwarg → GROUNDY_REFORMULATION_* env →
+        # OPENAI_* env → fallback. Kept entirely separate from the answer call (answer_fn),
+        # so the two tasks can run on different models and providers.
+        self.model = (
+            model
+            or _env_first("GROUNDY_REFORMULATION_MODEL")
+            or FALLBACK_REFORMULATION_MODEL
+        )
         self.temperature = temperature
+        self.base_url = base_url or _env_first(
+            "GROUNDY_REFORMULATION_BASE_URL", "OPENAI_BASE_URL"
+        )
+        self.api_key = api_key or _env_first(
+            "GROUNDY_REFORMULATION_API_KEY", "OPENAI_API_KEY"
+        )
         self.reformulate_fn = reformulate_fn
         self.verify_prompt = verify_prompt
 
         # lazy-load the similarity backend
         self._similarity_fn = self._load_backend(backend)
 
-        # Anthropic client for the default reformulator, constructed on first use only
-        # (so callers who pass reformulate_fn never need ANTHROPIC_API_KEY).
-        self._client: Optional[anthropic.Anthropic] = None
+        # OpenAI-compatible client for the default reformulator, constructed on first use
+        # only (so callers who pass reformulate_fn never need OPENAI_API_KEY).
+        self._client: Optional[OpenAI] = None
 
     def _load_backend(self, backend: str) -> Callable:
         if backend == "embeddings":
@@ -235,7 +279,7 @@ class GroundyChecker:
         logger.debug("[query] {!r}", query)
 
         # Step 1: generate N-1 reformulations of the original query — via the injected
-        # reformulator if given (vendor-agnostic), else the default Anthropic one.
+        # reformulator if given (vendor-agnostic), else the default OpenAI one.
         k = self.n - 1
         if self.reformulate_fn is not None:
             reformulations = list(self.reformulate_fn(query, k))
@@ -341,36 +385,36 @@ class GroundyChecker:
     # ------------------------------------------------------------------
 
     def _generate_reformulations(self, query: str) -> list[str]:
-        """Ask Claude to rephrase the query into n-1 semantically equivalent variants.
+        """Ask the model to rephrase the query into n-1 semantically equivalent variants.
 
         The original query's answer makes up the n-th member of the consistency set.
         """
         n_reformulations = self.n - 1
         if self._client is None:
-            self._client = anthropic.Anthropic()
+            self._client = OpenAI(base_url=self.base_url, api_key=self.api_key)
         client = self._client
 
         kwargs = dict(
             model=self.model,
             max_tokens=1024,
-            system=REFORMULATION_SYSTEM,
             messages=[
+                {"role": "system", "content": REFORMULATION_SYSTEM},
                 {
                     "role": "user",
                     "content": REFORMULATION_USER.format(
                         n=n_reformulations, query=query
                     ),
-                }
+                },
             ],
         )
         # Pin temperature for reproducibility; omit it entirely when None (some models,
-        # e.g. claude-opus-4-8, reject the parameter).
+        # e.g. certain reasoning models, reject the parameter).
         if self.temperature is not None:
             kwargs["temperature"] = self.temperature
 
-        response = client.messages.create(**kwargs)
+        response = client.chat.completions.create(**kwargs)
 
-        raw = response.content[0].text.strip()
+        raw = response.choices[0].message.content.strip()
         # strip markdown fences if present
         if raw.startswith("```"):
             raw = raw.split("```")[1]
@@ -390,8 +434,10 @@ def groundy(
     n: int = 5,
     threshold: float = 0.75,
     backend: str = "embeddings",
-    model: str = DEFAULT_MODEL,
+    model: Optional[str] = None,
     temperature: Optional[float] = TEMPERATURE,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
     reformulate_fn: Optional[Callable[[str, int], list[str]]] = None,
     verify_prompt: Optional[str] = VERIFY_PROMPT,
     cache: Optional[Cache] = None,
@@ -417,15 +463,28 @@ def groundy(
 
         @groundy(cache=my_semantic_cache)
         def ask(q: str) -> str:
-            return client.messages.create(...).content[0].text   # RAW model
+            return client.chat.completions.create(...).choices[0].message.content   # RAW model
 
     IMPORTANT: the wrapped call must hit the **raw** model. If a *semantic* cache sits
     underneath it, the reformulations collapse to one cached answer and every check
     falsely passes. The semantic cache belongs on top (via ``cache=``), not inside.
 
-    Vendor-agnostic reformulation: pass ``reformulate_fn=(query, k) -> list[str]`` to
-    generate the rephrasings with any provider (OpenAI, LiteLLM, a local model). When
-    omitted, an Anthropic-backed default is used (needs ANTHROPIC_API_KEY)::
+    Two independent LLM tasks, configured independently — each can use a different model
+    and even a different provider:
+
+    * **Answering** (the question *and* each reformulation) is ``func`` itself. There is
+      deliberately no ``answer_model=`` knob: the answer call *is* the function you
+      decorate, so you configure its model/provider/key/system-prompt in code, right there
+      in ``func`` (use whatever SDK you like — OpenAI, LiteLLM, Ollama, a local model).
+    * **Reformulating** (rephrasing the query) is groundy's own OpenAI-compatible call,
+      configured here via the ``model`` / ``base_url`` / ``api_key`` / ``temperature``
+      kwargs — **in code** — or the matching ``GROUNDY_REFORMULATION_*`` env vars (which
+      fall back to ``OPENAI_*``). Explicit kwargs win over env; nothing is hardcoded.
+
+    So you can reformulate on a cheap/fast model and answer on a stronger one, even across
+    providers (OpenAI, OpenRouter, Groq, Featherless, …). For a fully custom reformulator on
+    any stack, pass ``reformulate_fn=(query, k) -> list[str]`` and the library touches
+    **no** vendor SDK::
 
         @groundy(reformulate_fn=my_rephraser)
         def ask(q: str) -> str: ...
@@ -447,6 +506,8 @@ def groundy(
             backend=backend,
             model=model,
             temperature=temperature,
+            base_url=base_url,
+            api_key=api_key,
             reformulate_fn=reformulate_fn,
             verify_prompt=verify_prompt,
         )

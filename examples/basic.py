@@ -1,42 +1,86 @@
 """
 Basic Groundy usage — the @groundy decorator, with and without a cache.
-Run: python examples/basic.py   (needs ANTHROPIC_API_KEY)
+Run: python examples/basic.py
+
+groundy makes ONE LLM call of its own — REFORMULATION (rephrasing the question). The
+ANSWER call is *yours*: in a real project you already have a `query -> str` function, and
+you just put `@groundy` on it — groundy never needs the answer API.
+
+This file is standalone, so it has to build an answer client too (Duty 1 below). That
+client + the GROUNDY_ANSWER_* env vars are EXAMPLE SCAFFOLDING ONLY — they exist so the
+script has something to answer with. When you drop groundy into your codebase you delete
+all of that and decorate your existing call:
+
+    @groundy                       # reformulation auto-configures from OPENAI_* env
+    def ask(q): return my_existing_llm_call(q)
+
+Both calls speak the OpenAI API, so each can point at a *different* model and even a
+*different provider* (OpenAI, OpenRouter, Groq, Featherless, …) — fully independently,
+in code (the kwargs below) or via env (see .env.example).
 """
+
+import os
 
 from dotenv import load_dotenv
 
-load_dotenv()  # load .env so ANTHROPIC_API_KEY / GROUNDY_DEBUG are set before imports
+load_dotenv()  # load .env so the GROUNDY_* / OPENAI_* defaults are available below
 
-import anthropic  # noqa: E402
+from openai import OpenAI  # noqa: E402
 
 from groundy import groundy, GroundyChecker  # noqa: E402
 
 # Groundy is silent by default. To see reformulations + answers in dev, set
 # GROUNDY_DEBUG=1 in your environment (it's in .env.example) — picked up from .env above.
 
-client = anthropic.Anthropic()
-
-# Answer however you like — verbose, helpful, your own style. groundy verifies with its
-# own terse pass internally (verify_prompt), so you DON'T need to force terseness here;
-# the answer you serve stays exactly as written below.
+# ======================================================================================
+# Duty 1 — ANSWERING (your answer_fn).   ⚠ EXAMPLE SCAFFOLDING ONLY.
+# In a real project this already exists — you'd skip this entire block and just decorate
+# your existing answer function. groundy never needs the answer API; it only *invokes*
+# answer_fn (there is no answer_model= knob on @groundy by design). We build a client here
+# purely so this standalone script has something to answer with. Its credentials come from
+# the GROUNDY_ANSWER_* / OPENAI_* env vars (see .env.example).
+# ======================================================================================
+ANSWER_MODEL = os.getenv("GROUNDY_ANSWER_MODEL", "gpt-4o")
+answer_client = OpenAI(
+    base_url=os.getenv("GROUNDY_ANSWER_BASE_URL") or os.getenv("OPENAI_BASE_URL"),
+    api_key=os.getenv("GROUNDY_ANSWER_API_KEY") or os.getenv("OPENAI_API_KEY"),
+)
 ANSWER_SYSTEM = "You are a helpful assistant. Answer the user's question."
 
 
 def call_model(query: str) -> str:
     """The RAW model call. No cache underneath — that's essential (see README)."""
-    response = client.messages.create(
-        model="claude-opus-4-8",
+    response = answer_client.chat.completions.create(
+        model=ANSWER_MODEL,
         max_tokens=512,
-        system=ANSWER_SYSTEM,
-        messages=[{"role": "user", "content": query}],
+        messages=[
+            {"role": "system", "content": ANSWER_SYSTEM},
+            {"role": "user", "content": query},
+        ],
     )
-    return response.content[0].text
+    return response.choices[0].message.content
+
+
+# ======================================================================================
+# Duty 2 — REFORMULATION (groundy's own call).
+# Configured IN CODE via @groundy(model=, base_url=, api_key=, …) — a different model and
+# even a different provider than the answer client above. Passing literals here works
+# identically; we read env first only so the example follows your .env. Leave base_url /
+# api_key as None to inherit the generic OPENAI_* credentials.
+# ======================================================================================
+# base_url / api_key default to None → the library inherits the generic OPENAI_* creds.
+# Point them at a different provider (here or via GROUNDY_REFORMULATION_*) to split tasks.
+REFORMULATION = dict(
+    model=os.getenv("GROUNDY_REFORMULATION_MODEL", "gpt-4o-mini"),
+    base_url=os.getenv("GROUNDY_REFORMULATION_BASE_URL"),
+    api_key=os.getenv("GROUNDY_REFORMULATION_API_KEY"),
+)
 
 
 # --- 1. The headline API: a decorator that returns a trustworthy string ----------
 
 
-@groundy(n=5, threshold=0.75)
+@groundy(n=5, threshold=0.75, **REFORMULATION)
 def ask(query: str) -> str:
     return call_model(query)
 
@@ -62,7 +106,7 @@ class DictCache:
 cache = DictCache()
 
 
-@groundy(n=5, threshold=0.75, cache=cache)
+@groundy(n=5, threshold=0.75, cache=cache, **REFORMULATION)
 def ask_cached(query: str) -> str:
     return call_model(query)
 
@@ -87,9 +131,10 @@ if __name__ == "__main__":
     print("first  :", ask_cached(q))  # miss → full check → refusal, cached
     print("second :", ask_cached(q))  # hit  → same refusal, zero LLM calls
 
-    # The 20% door: full GroundyResult with all the scores.
+    # The 20% door: full GroundyResult with all the scores. The reformulation duty is
+    # configured on the checker (same kwargs as @groundy); the answer duty is answer_fn.
     print("\n=== GroundyChecker.check() — the rich result ===")
-    checker = GroundyChecker(n=5, threshold=0.75)
+    checker = GroundyChecker(n=5, threshold=0.75, **REFORMULATION)
     r = checker.check("What is the capital of France?", answer_fn=call_model)
     print(r)
     print(f"consistency={r.consistency_score:.3f}  best_answer={r.best_answer!r}")
