@@ -4,15 +4,15 @@ build-backend = "hatchling.build"
 
 [project]
 name = "groundy"
-version = "0.1.0b0"
+version = "0.1.0b1"
 description = "Hallucination detection for LLMs via semantic consistency checking"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-keywords = ["llm", "hallucination", "ai", "agents", "semantic-cache", "anthropic"]
+keywords = ["llm", "hallucination", "ai", "agents", "semantic-cache", "openai"]
 
 dependencies = [
-    "anthropic>=0.25.0",
+    "openai>=1.0.0",
     "sentence-transformers>=2.7.0",
     "loguru>=0.7.0",
 ]
@@ -29,4 +29,7 @@ dev = ["pytest", "pytest-asyncio", "black", "ruff", "python-dotenv"]
 # discovers it automatically — no explicit [tool.hatch.build.targets.wheel] needed.
 
 [tool.ruff]
+line-length = 100
+
+[tool.black]
 line-length = 100

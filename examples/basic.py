@@ -1,49 +1,52 @@
 """
-Basic Groundy usage — the @groundy decorator, with and without a cache.
-Run: python examples/basic.py   (needs ANTHROPIC_API_KEY)
+Basic groundy usage — the @groundy decorator, with and without a cache.
+Run: uv run python examples/basic.py   (needs OPENAI_API_KEY)
+
+groundy makes ONE LLM call of its own: REFORMULATION (rephrasing the question), which needs
+just three things — an API key, a provider, and a model name (OPENAI_API_KEY /
+OPENAI_BASE_URL / GROUNDY_MODEL), read like any OpenAI client. The ANSWER call is *yours* —
+the function you decorate. In a real project that function already exists and you just put
+`@groundy` on it. This example answers on the same provider and the same model it
+reformulates with, so OPENAI_API_KEY + GROUNDY_MODEL runs the whole thing.
 """
+
+import os
 
 from dotenv import load_dotenv
 
-load_dotenv()  # load .env so ANTHROPIC_API_KEY / GROUNDY_DEBUG are set before imports
+load_dotenv()  # load .env so OPENAI_* / GROUNDY_MODEL / GROUNDY_DEBUG are available below
 
-import anthropic  # noqa: E402
+from openai import OpenAI  # noqa: E402
 
 from groundy import groundy, GroundyChecker  # noqa: E402
 
-# Groundy is silent by default. To see reformulations + answers in dev, set
-# GROUNDY_DEBUG=1 in your environment (it's in .env.example) — picked up from .env above.
-
-client = anthropic.Anthropic()
-
-# Answer however you like — verbose, helpful, your own style. groundy verifies with its
-# own terse pass internally (verify_prompt), so you DON'T need to force terseness here;
-# the answer you serve stays exactly as written below.
-ANSWER_SYSTEM = "You are a helpful assistant. Answer the user's question."
+# Your answer call. Reuses the same provider AND model groundy reformulates with, so a
+# single OPENAI_API_KEY + GROUNDY_MODEL runs the whole thing on one model.
+client = OpenAI()  # reads OPENAI_API_KEY / OPENAI_BASE_URL from the env
+ANSWER_MODEL = os.environ["GROUNDY_MODEL"]
 
 
 def call_model(query: str) -> str:
     """The RAW model call. No cache underneath — that's essential (see README)."""
-    response = client.messages.create(
-        model="claude-opus-4-8",
+    msg = client.chat.completions.create(
+        model=ANSWER_MODEL,
         max_tokens=512,
-        system=ANSWER_SYSTEM,
         messages=[{"role": "user", "content": query}],
     )
-    return response.content[0].text
+    return msg.choices[0].message.content
 
 
 # --- 1. The headline API: a decorator that returns a trustworthy string ----------
 
 
-@groundy(n=5, threshold=0.75)
+@groundy
 def ask(query: str) -> str:
     return call_model(query)
 
 
 # --- 2. Same thing, but with a cache so groundy runs only on a miss --------------
-# Any object with get/set works. A plain dict-backed cache is the simplest possible
-# one (exact-match keys); swap in Redis / a managed semantic cache in real code.
+# Any object with get/set works. A dict is the simplest possible cache (exact-match
+# keys); swap in Redis / a managed semantic cache in real code.
 
 
 class DictCache:
@@ -62,7 +65,7 @@ class DictCache:
 cache = DictCache()
 
 
-@groundy(n=5, threshold=0.75, cache=cache)
+@groundy(cache=cache)
 def ask_cached(query: str) -> str:
     return call_model(query)
 
@@ -70,9 +73,7 @@ def ask_cached(query: str) -> str:
 if __name__ == "__main__":
     # The decorator returns a plain string — answer or refusal.
     print("\n=== @groundy (string in, string out) ===")
-    print(
-        ask("Who was the 14th person to walk on the Moon?")
-    )  # only 12 exist → refusal
+    print(ask("Who was the 14th person to walk on the Moon?"))  # only 12 exist → refusal
 
     # With a cache: first call runs the full check, second is an instant hit.
     print("\n=== @groundy(cache=...) — runs only on a miss ===")
@@ -80,8 +81,8 @@ if __name__ == "__main__":
     print("first  :", ask_cached(q))  # miss → full consistency check
     print("second :", ask_cached(q))  # hit  → returned instantly, no LLM calls
 
-    # Refusals are cached too (the "negative cache"): once a question is judged
-    # unreliable, that verdict is stored, so we don't re-interrogate the model next time.
+    # Refusals are cached too: once a question is judged unreliable, that verdict is
+    # stored, so we don't re-interrogate the model next time.
     print("\n=== @groundy(cache=...) — refusals are cached, not re-checked ===")
     q = "Who was the 14th person to walk on the Moon?"
     print("first  :", ask_cached(q))  # miss → full check → refusal, cached
@@ -89,7 +90,7 @@ if __name__ == "__main__":
 
     # The 20% door: full GroundyResult with all the scores.
     print("\n=== GroundyChecker.check() — the rich result ===")
-    checker = GroundyChecker(n=5, threshold=0.75)
+    checker = GroundyChecker()
     r = checker.check("What is the capital of France?", answer_fn=call_model)
     print(r)
     print(f"consistency={r.consistency_score:.3f}  best_answer={r.best_answer!r}")
