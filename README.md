@@ -62,6 +62,52 @@ That's it. A ready-to-run version (decorator + cache + raw checker) ships in the
 
 > 💡 `export GROUNDY_DEBUG=1` prints every reformulation, answer, and score.
 
+## Vibe-check it from the terminal
+
+No code needed — `groundy` asks your question a few ways and shows you the *scatter*: each
+distinct answer with a bar for how much it **agrees with the rest** (groundy's own signal),
+consensus on top, outliers at the bottom. Identical answers collapse to one `×N` row:
+
+```bash
+groundy "Who was the 14th person to walk on the Moon?"
+```
+
+```text
+🌱 groundy
+
+  ? Who was the 14th person to walk on the Moon?
+
+  ⚠ uncertain   consistency 0.50   · 17.8s
+
+  I'm not confident enough to answer that reliably.
+
+  scatter
+    █████░░░ 0.61  Eugene Cernan (the last person to walk on the Moon, Apollo 17)…
+    ████░░░░ 0.52  Eugene Cernan was the last (12th) person to walk on the Moon…
+    ███░░░░░ 0.41  Harrison Schmitt ×2
+```
+
+On a reliable question the bars stand tall together and collapse to one row
+(`████████ 1.00  Paris ×5`); on a shaky one they fan down as the answers pull apart.
+
+Want the raw structure? `--matrix` prints the full N×N pairwise heatmap — mutually-agreeing
+answers light up as bright blocks, so you *see* the clusters with no threshold and nothing
+aggregated:
+
+```text
+  scatter
+       a b c d e
+    a  ██░░██████  Eugene Cernan was the last (12th)…
+    b  ░░██░░░░░░  Gene Cernan
+    c  ██░░██████  Eugene Cernan was the last (12th)…
+    d  ██░░██████  Eugene Cernan was the last (12th)…
+    e  ██░░██████  Eugene Cernan (the last person…)
+```
+
+It reads `OPENAI_API_KEY` + `GROUNDY_MODEL` like everything else. Pipe a question in
+(`echo "…" | groundy`), add `-q` for answer-only output, `--matrix` for the heatmap,
+`-n`/`-t` to tune, or `--debug` for the raw reformulation log.
+
 ## How it works
 
 An uncertain model disagrees with itself when you rephrase the question; a confident one
@@ -221,10 +267,10 @@ uv run pytest                        # tests (once a tests/ dir exists)
 
 ## Roadmap
 
+- [x] CLI: `groundy "your query"`
 - [ ] `llm_judge` backend (structured 0–1 scoring — sharper than embeddings)
 - [ ] `async def acheck()` — parallelize the N calls
 - [ ] Tests + benchmark (measured reliable-vs-hallucinated separation)
-- [ ] CLI: `groundy-check "your query"`
 
 ## Origin
 

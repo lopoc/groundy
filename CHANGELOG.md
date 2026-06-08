@@ -5,6 +5,14 @@ All notable changes to `groundy` are documented here. The format is based on
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (pre-1.0: the API may still
 change between releases).
 
+## [Unreleased]
+
+### Added
+- `groundy` CLI — a zero-dep terminal vibe-check that asks a question a few ways and prints
+  the verdict plus the *scatter* (each rephrasing's terse answer + a consistency meter).
+  Reads `OPENAI_API_KEY` + `GROUNDY_MODEL`; supports stdin, `-q`, `-n`, `-t`, `--debug`. It
+  silences groundy's debug log by default so the render stays clean.
+
 ## [0.1.0b1] — 2026-06-07
 
 Configuration simplified to a single provider: groundy now needs just an API key, a
