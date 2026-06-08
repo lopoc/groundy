@@ -228,10 +228,27 @@ def main(argv: list[str] | None = None) -> int:
 
     client = OpenAI(base_url=base_url, api_key=os.getenv("GROUNDY_API_KEY"))
 
+    # check() calls answer_fn once per "way" (n verify calls), then once more for the served
+    # answer. We tick the counter *after* each call returns and live-update the spinner, so a
+    # given "i/n" only appears once that answer is actually back — it advances with the
+    # answers, never ahead of them. After the last verify answer, check() scores them pairwise
+    # (a fast local batched op — slow only on the first run, while the embedding model loads),
+    # which is when we flip to "comparing answers…". (The spinner thread reads .text each frame.)
+    spinner = _Spinner("reformulating…")
+    answered = 0
+
     def answer_fn(q: str) -> str:
+        nonlocal answered
+        if answered >= args.n:  # all n verify answers are in — this is the served call
+            spinner.text = "writing the answer…"
         msg = client.chat.completions.create(
             model=model, max_tokens=512, messages=[{"role": "user", "content": q}]
         )
+        answered += 1
+        if answered < args.n:
+            spinner.text = f"asking {answered}/{args.n} ways…"
+        elif answered == args.n:  # last verify in — check() now scores the answers pairwise
+            spinner.text = "comparing answers…"
         return msg.choices[0].message.content
 
     checker = GroundyChecker(n=args.n, threshold=args.threshold, model=model, base_url=base_url)
@@ -240,7 +257,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\n{_paint('🌱 groundy', GREEN, BOLD)}\n\n  {_paint('?', CYAN)} {query}")
 
     try:
-        with _Spinner(f"asking {args.n} ways…"):
+        with spinner:
             result = checker.check(query, answer_fn)
     except Exception as e:  # noqa: BLE001 — surface any provider/parse error cleanly
         print(_paint(f"✗ {type(e).__name__}: {e}", RED), file=sys.stderr)
