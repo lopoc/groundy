@@ -1,28 +1,28 @@
 """
 Basic groundy usage — the @groundy decorator, with and without a cache.
-Run: uv run python examples/basic.py   (needs OPENAI_API_KEY)
+Run: uv run python examples/basic.py   (needs GROUNDY_API_KEY + GROUNDY_MODEL)
 
-groundy makes ONE LLM call of its own: REFORMULATION (rephrasing the question), which needs
-just three things — an API key, a provider, and a model name (OPENAI_API_KEY /
-OPENAI_BASE_URL / GROUNDY_MODEL), read like any OpenAI client. The ANSWER call is *yours* —
-the function you decorate. In a real project that function already exists and you just put
-`@groundy` on it. This example answers on the same provider and the same model it
-reformulates with, so OPENAI_API_KEY + GROUNDY_MODEL runs the whole thing.
+groundy makes ONE LLM call of its own: REFORMULATION (rephrasing the question), over any
+OpenAI-compatible API — it needs just three things, all under its own namespace: an API key,
+a provider, and a model name (GROUNDY_API_KEY / GROUNDY_BASE_URL / GROUNDY_MODEL). The ANSWER
+call is *yours* — the function you decorate. In a real project that function already exists
+and you just put `@groundy` on it. This example answers on the same provider and the same
+model it reformulates with, so GROUNDY_API_KEY + GROUNDY_MODEL runs the whole thing.
 """
 
 import os
 
 from dotenv import load_dotenv
 
-load_dotenv()  # load .env so OPENAI_* / GROUNDY_MODEL / GROUNDY_DEBUG are available below
+load_dotenv()  # load .env so GROUNDY_* are available below
 
 from openai import OpenAI  # noqa: E402
 
 from groundy import groundy, GroundyChecker  # noqa: E402
 
 # Your answer call. Reuses the same provider AND model groundy reformulates with, so a
-# single OPENAI_API_KEY + GROUNDY_MODEL runs the whole thing on one model.
-client = OpenAI()  # reads OPENAI_API_KEY / OPENAI_BASE_URL from the env
+# single GROUNDY_API_KEY + GROUNDY_MODEL runs the whole thing on one model.
+client = OpenAI(base_url=os.getenv("GROUNDY_BASE_URL"), api_key=os.getenv("GROUNDY_API_KEY"))
 ANSWER_MODEL = os.environ["GROUNDY_MODEL"]
 
 

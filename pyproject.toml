@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "groundy"
-version = "0.1.0b1"
+version = "0.2.0"
 description = "Hallucination detection for LLMs via semantic consistency checking"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -19,6 +19,10 @@ dependencies = [
 
 [project.urls]
 Repository = "https://github.com/lopoc/groundy"
+
+# A tiny terminal vibe-check: `groundy "your question"`.
+[project.scripts]
+groundy = "groundy.cli:main"
 
 # Development tooling, installed by default with `uv sync` (PEP 735).
 # python-dotenv is for the examples only (loads .env); not a runtime dep of the library.

@@ -5,6 +5,18 @@ All notable changes to `groundy` are documented here. The format is based on
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (pre-1.0: the API may still
 change between releases).
 
+## [0.2.0] — 2026-06-08
+
+### Breaking
+- Env config moved to groundy's own namespace: `GROUNDY_API_KEY` / `GROUNDY_BASE_URL`
+  (was `OPENAI_*`).
+- `base_url` is now required (like `model`) — no default provider.
+- Removed the `reformulate_fn` hook; any OpenAI-compatible `base_url` covers it.
+
+### Added
+- `groundy` CLI — terminal vibe-check printing the verdict + agreement scatter
+  (`--matrix` for the N×N heatmap). Supports stdin and `-q`/`-n`/`-t`/`--debug`.
+
 ## [0.1.0b1] — 2026-06-07
 
 Configuration simplified to a single provider: groundy now needs just an API key, a
