@@ -12,7 +12,7 @@ from groundy import groundy
 
 @groundy(threshold=0.8)
 def ask(q: str) -> str:
-    return client.messages.create(...).content[0].text
+    return client.chat.completions.create(...).choices[0].message.content
 
 ask("Who proved Fermat's Last Theorem?")      # → "Andrew Wiles."
 ask("Who was the 14th person on the Moon?")   # → "I'm not confident enough to answer that reliably."
@@ -48,11 +48,15 @@ uv add git+https://github.com/lopoc/groundy.git
 (Prefer pip? `pip install git+https://github.com/lopoc/groundy.git`. Want to hack on
 groundy itself instead? See [Develop](#develop).)
 
-**2. Set your API key.** By default groundy uses Anthropic to rephrase the question, so
-it needs a key (swap this out later with `reformulate_fn` — see *Run on any vendor*):
+**2. Configure the reformulator.** By default groundy rephrases the question through any
+OpenAI-compatible provider, so it needs a model name and a key (swap this out later with
+`reformulate_fn` — see *Run on any vendor*):
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
+export GROUNDY_MODEL=gpt-4o-mini
+export OPENAI_API_KEY=sk-...
+# optional: point at any OpenAI-compatible endpoint (OpenRouter, Groq, a local server)
+# export OPENAI_BASE_URL=https://openrouter.ai/api/v1
 ```
 
 **3. Wrap any `query -> str` LLM call** with `@groundy` and call it as usual — you get
@@ -60,21 +64,21 @@ back a trustworthy answer, or a refusal. Save this as `try_groundy.py` and run i
 `uv run python try_groundy.py`:
 
 ```python
-import anthropic
+from openai import OpenAI
 from groundy import groundy
 
-client = anthropic.Anthropic()
+client = OpenAI()
 
 @groundy(threshold=0.8)
 def ask(q: str) -> str:
     # Answer however you like — verbose, your system prompt, your temperature.
     # groundy verifies with its own terse pass; your served answer stays as-is.
-    msg = client.messages.create(
-        model="claude-opus-4-8",
+    msg = client.chat.completions.create(
+        model="gpt-4o",
         max_tokens=512,
         messages=[{"role": "user", "content": q}],
     )
-    return msg.content[0].text
+    return msg.choices[0].message.content
 
 print(ask("Who proved Fermat's Last Theorem?"))     # → a full answer about Andrew Wiles
 print(ask("Who was the 14th person on the Moon?"))  # → "I'm not confident enough to answer that reliably."
@@ -109,8 +113,8 @@ When you call the wrapped function with a query, the decorator runs one full
 consistency check before returning. With `@groundy(n=5)`:
 
 1. **Rephrase the query** `n-1` times (here, 4). One reformulation call produces 4
-   semantically-equivalent rewordings. (Anthropic by default; swap with `reformulate_fn`
-   — see *Run on any vendor*.)
+   semantically-equivalent rewordings. (Any OpenAI-compatible provider by default; swap
+   with `reformulate_fn` — see *Run on any vendor*.)
 2. **Answer all `n` of them — tersely.** Calls your function on the original query *and*
    each rephrasing, with a terse instruction prepended (`verify_prompt`), so the answers
    compared are short and the signal is about *substance, not phrasing*. These are the
@@ -148,7 +152,7 @@ cache = redis.Redis()   # anything with .get / .set; a semantic cache works too
 
 @groundy(threshold=0.8, cache=cache)   # ← groundy cache.get()s first, cache.set()s on a miss
 def ask(q: str) -> str:
-    return client.messages.create(...).content[0].text   # the RAW model
+    return client.chat.completions.create(...).choices[0].message.content   # the RAW model
 
 ask("Who discovered penicillin?")   # MISS → full check → answer cached
 ask("Who discovered penicillin?")   # HIT  → straight from the cache, zero LLM calls
@@ -203,8 +207,9 @@ vendor-agnostic.
 
 - **Answers** are always yours — `answer_fn` (or the decorated function) just returns a
   `str`. OpenAI, LiteLLM, Ollama, a local model, anything.
-- **Reformulations** default to an Anthropic call (needs `ANTHROPIC_API_KEY`), but you can
-  inject your own with `reformulate_fn` — a `(query, k) -> list[str]` that returns `k`
+- **Reformulations** default to an OpenAI-compatible call (needs `GROUNDY_MODEL` +
+  `OPENAI_API_KEY`, with an optional `OPENAI_BASE_URL` to retarget the provider), but you
+  can inject your own with `reformulate_fn` — a `(query, k) -> list[str]` that returns `k`
   semantically-equivalent rephrasings. Pass it and the library touches **no** vendor SDK:
 
 ```python
@@ -219,7 +224,7 @@ def rephrase(query: str, k: int) -> list[str]:
     )
     return json.loads(r.choices[0].message.content)
 
-@groundy(threshold=0.8, reformulate_fn=rephrase)   # fully Anthropic-free
+@groundy(threshold=0.8, reformulate_fn=rephrase)   # no OpenAI SDK touched at all
 def ask(q: str) -> str:
     return litellm.completion(model="ollama/llama3",
                               messages=[{"role": "user", "content": q}]).choices[0].message.content
@@ -236,9 +241,11 @@ swap in a small local model.
 | `n` | `5` | Answers compared: original + `n-1` reformulations. Must be ≥ 2. Higher = sturdier + pricier. |
 | `threshold` | `0.75` | Score below this → refusal. **Calibrate it** (see limits). |
 | `backend` | `"embeddings"` | `embeddings` (local, sentence-transformers) or `llm_judge` (stub). |
-| `model` | `claude-sonnet-4-6` | Model the *default* reformulator uses. (Sonnet, not Opus: see `temperature`.) Ignored if `reformulate_fn` is set. |
-| `temperature` | `0.0` | Default reformulator temperature — `0.0` for reproducible rephrasings. Set `None` to omit it for models that reject the param (e.g. `claude-opus-4-8`). Ignored if `reformulate_fn` is set. |
-| `reformulate_fn` | `None` | Bring-your-own reformulator: `(query, k) -> list[str]`. Set it to run on any vendor with **no** Anthropic dependency. |
+| `model` | `None` → `GROUNDY_MODEL` | Model the *default* reformulator uses, over the OpenAI Chat Completions API. **No fallback** — if unset and no `reformulate_fn`, construction raises. Ignored if `reformulate_fn` is set. |
+| `base_url` | `None` → `OPENAI_BASE_URL` | Endpoint for the *default* reformulator, passed to `OpenAI(...)`. Point at any OpenAI-compatible provider. Ignored if `reformulate_fn` is set. |
+| `api_key` | `None` → `OPENAI_API_KEY` | API key for the *default* reformulator, passed to `OpenAI(...)`. Ignored if `reformulate_fn` is set. |
+| `temperature` | `0.0` | Default reformulator temperature — `0.0` for reproducible rephrasings. Set `None` to omit it for models that reject the param (e.g. some reasoning models). Ignored if `reformulate_fn` is set. |
+| `reformulate_fn` | `None` | Bring-your-own reformulator: `(query, k) -> list[str]`. Set it to run on any vendor with **no** OpenAI dependency. |
 | `verify_prompt` | *(a terse instruction)* | Prepended to the **verify** answers (not the served one) to force terseness. Set `None` to verify with your raw answers. |
 | `cache` | `None` | Any object with `get`/`set`. Drives the get→check→set loop. |
 | `on_unreliable` | *(a refusal string)* | Returned/cached when the model disagrees with itself. |
@@ -281,7 +288,7 @@ git clone https://github.com/lopoc/groundy.git
 cd groundy
 uv sync                              # creates .venv, installs runtime + dev tools
 
-uv run python examples/basic.py      # smoke test (needs ANTHROPIC_API_KEY)
+uv run python examples/basic.py      # smoke test (needs OPENAI_API_KEY + GROUNDY_MODEL)
 uv run ruff check groundy            # lint
 uv run black groundy                 # format
 uv run pytest                        # tests (once a tests/ dir exists)

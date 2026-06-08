@@ -1,20 +1,28 @@
 """
 Basic Groundy usage — the @groundy decorator, with and without a cache.
-Run: python examples/basic.py   (needs ANTHROPIC_API_KEY)
+Run: python examples/basic.py   (needs OPENAI_API_KEY + GROUNDY_MODEL)
 """
+
+import os
 
 from dotenv import load_dotenv
 
-load_dotenv()  # load .env so ANTHROPIC_API_KEY / GROUNDY_DEBUG are set before imports
+load_dotenv()  # load .env so OPENAI_API_KEY / GROUNDY_MODEL / GROUNDY_DEBUG are set first
 
-import anthropic  # noqa: E402
+from openai import OpenAI  # noqa: E402
 
 from groundy import groundy, GroundyChecker  # noqa: E402
 
 # Groundy is silent by default. To see reformulations + answers in dev, set
 # GROUNDY_DEBUG=1 in your environment (it's in .env.example) — picked up from .env above.
 
-client = anthropic.Anthropic()
+# base_url/api_key default to OPENAI_BASE_URL/OPENAI_API_KEY. Point at any OpenAI-
+# compatible provider (OpenAI, OpenRouter, Groq, a local server) via those env vars.
+client = OpenAI()
+
+# The answer model rides the same GROUNDY_MODEL here for simplicity, but it's an
+# independent call — you could answer on a stronger model than you reformulate on.
+MODEL = os.environ["GROUNDY_MODEL"]
 
 # Answer however you like — verbose, helpful, your own style. groundy verifies with its
 # own terse pass internally (verify_prompt), so you DON'T need to force terseness here;
@@ -24,13 +32,15 @@ ANSWER_SYSTEM = "You are a helpful assistant. Answer the user's question."
 
 def call_model(query: str) -> str:
     """The RAW model call. No cache underneath — that's essential (see README)."""
-    response = client.messages.create(
-        model="claude-opus-4-8",
+    response = client.chat.completions.create(
+        model=MODEL,
         max_tokens=512,
-        system=ANSWER_SYSTEM,
-        messages=[{"role": "user", "content": query}],
+        messages=[
+            {"role": "system", "content": ANSWER_SYSTEM},
+            {"role": "user", "content": query},
+        ],
     )
-    return response.content[0].text
+    return response.choices[0].message.content
 
 
 # --- 1. The headline API: a decorator that returns a trustworthy string ----------
