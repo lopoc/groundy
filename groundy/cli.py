@@ -5,7 +5,7 @@ A tiny ``groundy`` CLI — paste a question, watch it think, see the verdict.
 
 Zero extra deps: hand-rolled ANSI + a braille spinner, both TTY-aware (they degrade to
 plain text when piped). It reformulates *and* answers on ``GROUNDY_MODEL`` via the
-OpenAI-compatible client, so ``OPENAI_API_KEY`` + ``GROUNDY_MODEL`` runs the whole thing.
+OpenAI-compatible client, so ``GROUNDY_API_KEY`` + ``GROUNDY_MODEL`` runs the whole thing.
 
 The CLI owns its output: it silences groundy's debug logging (even if ``GROUNDY_DEBUG=1``)
 so the pretty render stays clean — pass ``--debug`` to see the raw reformulation/answer log.
@@ -172,7 +172,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="groundy",
         description="Ask a question several ways; pass only if the model agrees with itself.",
-        epilog="Needs OPENAI_API_KEY + GROUNDY_MODEL (reformulates and answers on that model).",
+        epilog="Needs GROUNDY_API_KEY, GROUNDY_BASE_URL, GROUNDY_MODEL "
+        "(reformulates and answers on that model).",
     )
     parser.add_argument("query", nargs="?", help="the question (or pipe it via stdin)")
     parser.add_argument("-n", type=int, default=5, help="answers compared (default: 5)")
@@ -206,6 +207,12 @@ def main(argv: list[str] | None = None) -> int:
     if not model:
         print(_paint("✗ set GROUNDY_MODEL (or pass --model) first.", RED), file=sys.stderr)
         return 2
+    base_url = os.getenv("GROUNDY_BASE_URL")
+    if not base_url:
+        print(
+            _paint("✗ set GROUNDY_BASE_URL (your provider endpoint) first.", RED), file=sys.stderr
+        )
+        return 2
 
     from loguru import logger
     from openai import OpenAI
@@ -219,7 +226,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         logger.disable("groundy")
 
-    client = OpenAI()  # reads OPENAI_API_KEY / OPENAI_BASE_URL from the env
+    client = OpenAI(base_url=base_url, api_key=os.getenv("GROUNDY_API_KEY"))
 
     def answer_fn(q: str) -> str:
         msg = client.chat.completions.create(
@@ -227,7 +234,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return msg.choices[0].message.content
 
-    checker = GroundyChecker(n=args.n, threshold=args.threshold, model=model)
+    checker = GroundyChecker(n=args.n, threshold=args.threshold, model=model, base_url=base_url)
 
     if not args.quiet:
         print(f"\n{_paint('🌱 groundy', GREEN, BOLD)}\n\n  {_paint('?', CYAN)} {query}")

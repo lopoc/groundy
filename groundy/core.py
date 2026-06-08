@@ -24,9 +24,10 @@ from openai import OpenAI
 
 from groundy.prompts import REFORMULATION_SYSTEM, REFORMULATION_USER
 
-# groundy makes ONE LLM call of its own — reformulation. It needs just three things, read
-# like any OpenAI client: an API key (OPENAI_API_KEY), a provider (OPENAI_BASE_URL), and a
-# model name (model= or GROUNDY_MODEL). There is no default model — you name it explicitly.
+# groundy makes ONE LLM call of its own — reformulation, over an OpenAI-compatible API. It
+# needs just three things, all under its own namespace: an API key (GROUNDY_API_KEY), a
+# provider (GROUNDY_BASE_URL), and a model name (model= or GROUNDY_MODEL). Model and provider
+# have no default — you name them explicitly. Point them at any OpenAI-compatible endpoint.
 
 # Reformulations use temperature 0 so the rephrasings are stable across runs.
 TEMPERATURE = 0.0
@@ -97,11 +98,10 @@ class GroundyChecker:
     n : answers compared (original + n-1 reformulations), >= 2.
     threshold : min consistency score (0-1) to call an answer reliable.
     backend : similarity backend — ``'embeddings'`` (local, default) or ``'llm_judge'`` (stub).
-    model, temperature, base_url, api_key : config for the default reformulator only.
-        ``model`` is required (``model=`` → ``GROUNDY_MODEL``, else ``ValueError``); the rest
-        fall back to ``OPENAI_*``. All ignored when ``reformulate_fn`` is set.
-    reformulate_fn : bring your own reformulator ``(query, k) -> k rephrasings``; with it set,
-        the library touches no vendor SDK.
+    model, temperature, base_url, api_key : config for the reformulation call. ``model`` and
+        ``base_url`` are **required** (kwarg → ``GROUNDY_MODEL`` / ``GROUNDY_BASE_URL``, else
+        ``ValueError`` — no default provider); ``api_key`` → ``GROUNDY_API_KEY`` (may be unset
+        for keyless local servers). Any OpenAI-compatible endpoint works.
     verify_prompt : prepended to the verify answers to force terseness (None to skip).
     """
 
@@ -114,7 +114,6 @@ class GroundyChecker:
         temperature: Optional[float] = TEMPERATURE,
         base_url: Optional[str] = None,
         api_key: Optional[str] = None,
-        reformulate_fn: Optional[Callable[[str, int], list[str]]] = None,
         verify_prompt: Optional[str] = VERIFY_PROMPT,
     ):
         if n < 2:
@@ -122,25 +121,22 @@ class GroundyChecker:
         self.n = n
         self.threshold = threshold
         self.backend = backend
-        # groundy's own reformulation call: just a model + provider. base_url/api_key stay
-        # None when unset so the OpenAI SDK reads OPENAI_BASE_URL / OPENAI_API_KEY itself.
+        # groundy's own reformulation call: a model + provider, all under the GROUNDY_*
+        # namespace (no OpenAI-branded env vars). kwargs win over env; either may be unset.
         self.model = model or os.getenv("GROUNDY_MODEL")
         self.temperature = temperature
-        self.base_url = base_url
-        self.api_key = api_key
-        self.reformulate_fn = reformulate_fn
+        self.base_url = base_url or os.getenv("GROUNDY_BASE_URL")
+        self.api_key = api_key or os.getenv("GROUNDY_API_KEY")
         self.verify_prompt = verify_prompt
 
-        # The default reformulator needs a model name — there's no fallback. (Not required
-        # when you inject reformulate_fn: then groundy makes no LLM call of its own.)
-        if reformulate_fn is None and not self.model:
-            raise ValueError(
-                "No reformulation model. Pass model= or set GROUNDY_MODEL "
-                "(or inject reformulate_fn to skip groundy's own LLM call)."
-            )
+        # The reformulation call needs a model and a provider — no defaults, name them.
+        if not self.model:
+            raise ValueError("No reformulation model. Pass model= or set GROUNDY_MODEL.")
+        if not self.base_url:
+            raise ValueError("No reformulation provider. Pass base_url= or set GROUNDY_BASE_URL.")
 
         self._similarity_fn = self._load_backend(backend)
-        self._client: Optional[OpenAI] = None  # built on first default-reformulator use
+        self._client: Optional[OpenAI] = None  # built on first reformulation call
 
     def _load_backend(self, backend: str) -> Callable:
         if backend == "embeddings":
@@ -175,12 +171,8 @@ class GroundyChecker:
         )
         logger.debug("💬 query | {!r}", query)
 
-        # 1. Reformulate the query n-1 times (injected reformulator, else the default one).
-        k = self.n - 1
-        if self.reformulate_fn is not None:
-            reformulations = list(self.reformulate_fn(query, k))
-        else:
-            reformulations = self._generate_reformulations(query)
+        # 1. Reformulate the query n-1 times.
+        reformulations = self._generate_reformulations(query)
 
         # 2. Verify answers — terse, so consistency is about substance, not phrasing.
         verify_inputs = [query] + reformulations
@@ -293,7 +285,6 @@ def groundy(
     temperature: Optional[float] = TEMPERATURE,
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
-    reformulate_fn: Optional[Callable[[str, int], list[str]]] = None,
     verify_prompt: Optional[str] = VERIFY_PROMPT,
     cache: Optional[Cache] = None,
     on_unreliable: str = DEFAULT_REFUSAL,
@@ -315,7 +306,6 @@ def groundy(
             temperature=temperature,
             base_url=base_url,
             api_key=api_key,
-            reformulate_fn=reformulate_fn,
             verify_prompt=verify_prompt,
         )
 
