@@ -3,13 +3,10 @@ groundy.core
 ~~~~~~~~~~~~
 Hallucination detection via semantic self-consistency.
 
-Ask the same question several ways. If the answers agree, the model is confident; if they
-scatter, it's improvising — so return a refusal instead. No ground truth, no fine-tuning,
-no retrieval.
-
-The headline API is the ``@groundy`` decorator: it turns a ``query -> str`` LLM call into
-a *trustworthy* ``query -> str`` — same signature, but the answer is either one the model
-agrees with itself on, or a refusal string.
+Ask the same question several ways: if the answers agree the model is confident, if they
+scatter it's improvising — so return a refusal instead. No ground truth, no fine-tuning, no
+retrieval. The headline API is the ``@groundy`` decorator; ``GroundyChecker.check()`` is the
+rich-result door underneath it.
 """
 
 from __future__ import annotations
@@ -93,34 +90,19 @@ class GroundyResult:
 
 
 class GroundyChecker:
-    """Core checker. Use directly for the rich :class:`GroundyResult`, or use the
-    ``@groundy`` decorator for the simple ``str``-in/``str``-out path.
+    """Core checker — ``check()`` returns a rich :class:`GroundyResult`. (For the simple
+    ``str``-in/``str``-out path, use the ``@groundy`` decorator.) See the README for the
+    full story; params below are the reference.
 
-    groundy's own (reformulation) call needs just an API key and a provider, read like any
-    OpenAI client — ``OPENAI_API_KEY`` / ``OPENAI_BASE_URL`` — so it works against any
-    OpenAI-compatible provider. Your *answer* call is whatever ``answer_fn`` does; the two
-    are independent and can use different models or providers.
-
-    Parameters
-    ----------
-    n : int
-        Answers compared: the original query's answer plus n-1 reformulation answers. Must
-        be >= 2. Higher = sturdier and pricier; 3-5 is a good range.
-    threshold : float
-        Minimum consistency score (0-1) to call the answer reliable. Calibrate it.
-    backend : str
-        Similarity backend: ``'embeddings'`` (local, default) or ``'llm_judge'`` (stub).
-    model, temperature, base_url, api_key :
-        Provider config for the default reformulator. ``model`` is required (no default):
-        ``model=`` → ``GROUNDY_MODEL``, else a ``ValueError``. ``base_url``/``api_key`` are
-        left None when unset so the OpenAI SDK reads ``OPENAI_*``. All ignored if
-        ``reformulate_fn`` is set.
-    reformulate_fn : Callable[[str, int], list[str]] | None
-        Bring your own reformulator — ``(query, k) -> k rephrasings`` — and the library
-        touches no vendor SDK. When None, the OpenAI-compatible default is used.
-    verify_prompt : str | None
-        Prepended to each query for the verify answers (forces terseness). None verifies
-        with your raw answers instead.
+    n : answers compared (original + n-1 reformulations), >= 2.
+    threshold : min consistency score (0-1) to call an answer reliable.
+    backend : similarity backend — ``'embeddings'`` (local, default) or ``'llm_judge'`` (stub).
+    model, temperature, base_url, api_key : config for the default reformulator only.
+        ``model`` is required (``model=`` → ``GROUNDY_MODEL``, else ``ValueError``); the rest
+        fall back to ``OPENAI_*``. All ignored when ``reformulate_fn`` is set.
+    reformulate_fn : bring your own reformulator ``(query, k) -> k rephrasings``; with it set,
+        the library touches no vendor SDK.
+    verify_prompt : prepended to the verify answers to force terseness (None to skip).
     """
 
     def __init__(
@@ -178,15 +160,11 @@ class GroundyChecker:
     def check(self, query: str, answer_fn: Callable[[str], str]) -> GroundyResult:
         """Run the full consistency check and return a rich :class:`GroundyResult`.
 
-        ``answer_fn`` is your LLM call (``query -> str``). **It must hit the raw model**: if
-        a *semantic* cache sits underneath, the reformulations collapse to one cached
-        answer, similarity is trivially 1.0, and every check falsely passes.
-
-        It is called in two modes: once per ``[query, *reformulations]`` with
-        ``verify_prompt`` prepended (the terse *verify* answers, compared for consistency),
-        and — only if the verdict is reliable — once on the raw query (the *served*
-        answer). The served call is skipped on an unreliable check to save tokens, so
-        ``original_answer`` is ``""`` then.
+        ``answer_fn`` is your ``query -> str`` LLM call. **It must hit the raw model** — a
+        semantic cache underneath collapses the reformulations to one answer and every check
+        falsely passes (see README). It's called for the terse *verify* answers, then once
+        more on the raw query for the *served* answer — only if reliable, else
+        ``original_answer`` stays ``""``.
         """
         t0 = time.monotonic()
         logger.debug(
@@ -320,23 +298,12 @@ def groundy(
     cache: Optional[Cache] = None,
     on_unreliable: str = DEFAULT_REFUSAL,
 ):
-    """Turn a ``query -> str`` LLM call into a *trustworthy* ``query -> str``.
+    """Turn a ``query -> str`` LLM call into a *trustworthy* ``query -> str`` — same
+    signature, but the answer is one the model agrees with itself on, or ``on_unreliable``.
+    Works bare (``@groundy``) or called (``@groundy(threshold=0.8, cache=my_cache)``).
 
-    The wrapped function keeps its signature and still returns a ``str`` — either an answer
-    the model agrees with itself on, or ``on_unreliable`` when it doesn't. Works bare or
-    called::
-
-        @groundy
-        def ask(q: str) -> str: ...
-
-        @groundy(threshold=0.8, cache=my_cache)
-        def ask(q: str) -> str: ...
-
-    The wrapped call must hit the **raw** model — see :meth:`GroundyChecker.check`. Pass
-    ``cache=`` (any object with ``get``/``set``) to run only on a miss. groundy's own
-    reformulation call needs just an API key and a provider (``OPENAI_*``); configure it
-    with ``model``/``base_url``/``api_key`` or swap it out entirely with ``reformulate_fn``.
-    Want the scores? Use :meth:`GroundyChecker.check` directly.
+    The wrapped call must hit the **raw** model. Pass ``cache=`` to run only on a miss.
+    Want the scores instead? Use :meth:`GroundyChecker.check`. See the README for the rest.
     """
 
     def decorate(func: Callable[..., str]) -> Callable[..., str]:

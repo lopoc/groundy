@@ -12,9 +12,7 @@ from groundy import groundy
 
 @groundy
 def ask(q: str) -> str:
-    return client.chat.completions.create(
-        model="gpt-4o", messages=[{"role": "user", "content": q}]
-    ).choices[0].message.content
+    return my_llm(q)   # your LLM call — any provider, returns a str
 
 ask("Who proved Fermat's Last Theorem?")     # → "Andrew Wiles."
 ask("Who was the 14th person on the Moon?")  # → "I'm not confident enough to answer that reliably."
@@ -204,15 +202,9 @@ groundy measures **self-consistency, not correctness.** Know the failure modes:
 
 ## Observability
 
-No built-in vendor integration — by design, groundy does one thing. You have the full
-`GroundyResult`, so log it however you already do:
-
-```python
-r = checker.check(query, answer_fn)
-my_tracer.log(consistency=r.consistency_score, reliable=r.is_reliable)
-```
-
-For dev, set `GROUNDY_DEBUG=1` to see reformulations + answers (silent otherwise).
+None built in — by design. You have the full `GroundyResult`; log it however you already do
+(`my_tracer.log(consistency=r.consistency_score, reliable=r.is_reliable)`). For dev, set
+`GROUNDY_DEBUG=1` to print reformulations, answers, and scores.
 
 ## Develop
 
