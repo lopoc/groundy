@@ -63,7 +63,7 @@ That's it. A ready-to-run version (decorator + cache + raw checker) ships in the
 
 ## Vibe-check it from the terminal
 
-No code needed - `groundy` asks your question a few ways and shows you the *scatter*: each
+No code needed - `groundy` asks your question a few ways and shows you the *matrix*: each
 distinct answer with a bar for how much it **agrees with the rest** (groundy's own signal),
 consensus on top, outliers at the bottom. Identical answers collapse to one `×N` row:
 

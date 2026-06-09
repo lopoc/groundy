@@ -26,13 +26,22 @@ client = OpenAI(base_url=os.getenv("GROUNDY_BASE_URL"), api_key=os.getenv("GROUN
 ANSWER_MODEL = os.environ["GROUNDY_MODEL"]
 
 
-def call_model(query: str) -> str:
-    """The RAW model call. No cache underneath — that's essential (see README)."""
-    msg = client.chat.completions.create(
+def call_model(query: str, temperature: float | None = None) -> str:
+    """The RAW model call. No cache underneath — that's essential (see README).
+
+    ``temperature`` is left to the caller: the decorated functions below call this with
+    no temperature (the dev's own function — groundy never configures it), while the
+    ``check()`` demo pins it to 0.0 so the consistency score isolates phrasing-driven
+    divergence from raw sampling noise.
+    """
+    kwargs = dict(
         model=ANSWER_MODEL,
         max_tokens=512,
         messages=[{"role": "user", "content": query}],
     )
+    if temperature is not None:
+        kwargs["temperature"] = temperature
+    msg = client.chat.completions.create(**kwargs)
     return msg.choices[0].message.content
 
 
@@ -91,6 +100,10 @@ if __name__ == "__main__":
     # The 20% door: full GroundyResult with all the scores.
     print("\n=== GroundyChecker.check() — the rich result ===")
     checker = GroundyChecker()
-    r = checker.check("What is the capital of France?", answer_fn=call_model)
+    # Pin the answer call to temp 0 here so consistency reflects phrasing, not sampling.
+    r = checker.check(
+        "What is the capital of France?",
+        answer_fn=lambda q: call_model(q, temperature=0.0),
+    )
     print(r)
     print(f"consistency={r.consistency_score:.3f}  best_answer={r.best_answer!r}")
