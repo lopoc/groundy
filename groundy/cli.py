@@ -188,7 +188,8 @@ def main(argv: list[str] | None = None) -> int:
         "--backend",
         default="fastembed",
         help="similarity backend: fastembed (default, lighter ONNX) or embeddings "
-        "(sentence-transformers); fastembed falls back to embeddings if not installed",
+        "(sentence-transformers bi-encoder); fastembed falls back to embeddings if not "
+        "installed",
     )
     parser.add_argument(
         "-c",

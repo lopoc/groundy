@@ -162,7 +162,8 @@ class GroundyChecker:
 
             return judge_similarity_batch
         raise ValueError(
-            f"Unknown backend: {backend!r}. Use 'embeddings', 'fastembed', or 'llm_judge'."
+            f"Unknown backend: {backend!r}. "
+            "Use 'embeddings', 'fastembed', or 'llm_judge'."
         )
 
     # ------------------------------------------------------------------
