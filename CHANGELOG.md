@@ -14,7 +14,7 @@ change between releases).
 - Removed the `reformulate_fn` hook; any OpenAI-compatible `base_url` covers it.
 
 ### Added
-- `groundy` CLI — terminal vibe-check printing the verdict + agreement scatter
+- `groundy` CLI — terminal vibe-check printing the verdict + agreement matrix
   (`--matrix` for the N×N heatmap). Supports stdin and `-q`/`-n`/`-t`/`--debug`.
 
 ## [0.1.0b1] — 2026-06-07

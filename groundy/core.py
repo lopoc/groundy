@@ -16,6 +16,7 @@ import itertools
 import json
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Protocol, runtime_checkable
 
@@ -97,12 +98,17 @@ class GroundyChecker:
 
     n : answers compared (original + n-1 reformulations), >= 2.
     threshold : min consistency score (0-1) to call an answer reliable.
-    backend : similarity backend — ``'embeddings'`` (local, default) or ``'llm_judge'`` (stub).
+    backend : similarity backend — ``'embeddings'`` (sentence-transformers, local, default),
+        ``'fastembed'`` (same model via ONNX, ~15x lighter import, needs the fastembed extra),
+        or ``'llm_judge'`` (stub).
     model, temperature, base_url, api_key : config for the reformulation call. ``model`` and
         ``base_url`` are **required** (kwarg → ``GROUNDY_MODEL`` / ``GROUNDY_BASE_URL``, else
         ``ValueError`` — no default provider); ``api_key`` → ``GROUNDY_API_KEY`` (may be unset
         for keyless local servers). Any OpenAI-compatible endpoint works.
     verify_prompt : prepended to the verify answers to force terseness (None to skip).
+    concurrency : how many of the n verify ``answer_fn`` calls run at once (default 2; 1 =
+        sequential). They're independent, so this cuts wall-clock; the served call stays
+        sequential. ``answer_fn`` must be thread-safe when > 1 (a plain LLM/HTTP call is).
     """
 
     def __init__(
@@ -115,10 +121,14 @@ class GroundyChecker:
         base_url: Optional[str] = None,
         api_key: Optional[str] = None,
         verify_prompt: Optional[str] = VERIFY_PROMPT,
+        concurrency: int = 2,
     ):
         if n < 2:
             raise ValueError(f"n must be >= 2 (need 2+ answers to compare), got {n}.")
+        if concurrency < 1:
+            raise ValueError(f"concurrency must be >= 1, got {concurrency}.")
         self.n = n
+        self.concurrency = concurrency
         self.threshold = threshold
         self.backend = backend
         # groundy's own reformulation call: a model + provider, all under the GROUNDY_*
@@ -143,11 +153,17 @@ class GroundyChecker:
             from groundy.backends.embeddings import cosine_similarity_batch
 
             return cosine_similarity_batch
+        if backend == "fastembed":
+            from groundy.backends.fastembed import cosine_similarity_batch
+
+            return cosine_similarity_batch
         if backend == "llm_judge":
             from groundy.backends.llm_judge import judge_similarity_batch
 
             return judge_similarity_batch
-        raise ValueError(f"Unknown backend: {backend!r}. Use 'embeddings' or 'llm_judge'.")
+        raise ValueError(
+            f"Unknown backend: {backend!r}. Use 'embeddings', 'fastembed', or 'llm_judge'."
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -174,13 +190,22 @@ class GroundyChecker:
         # 1. Reformulate the query n-1 times.
         reformulations = self._generate_reformulations(query)
 
-        # 2. Verify answers — terse, so consistency is about substance, not phrasing.
+        # 2. Verify answers — terse, so consistency is about substance, not phrasing. The n
+        # calls are independent, so run up to self.concurrency at once (order preserved, so
+        # answers[i] stays aligned to verify_inputs[i] for the pairwise indexing below).
         verify_inputs = [query] + reformulations
-        answers = []
-        for i, q in enumerate(verify_inputs, start=1):
+
+        def _verify(q: str) -> str:
             vq = f"{self.verify_prompt}\n\n{q}" if self.verify_prompt else q
-            a = answer_fn(vq)
-            answers.append(a)
+            return answer_fn(vq)
+
+        if self.concurrency > 1 and len(verify_inputs) > 1:
+            with ThreadPoolExecutor(max_workers=self.concurrency) as pool:
+                answers = list(pool.map(_verify, verify_inputs))
+        else:
+            answers = [_verify(q) for q in verify_inputs]
+
+        for i, (q, a) in enumerate(zip(verify_inputs, answers), start=1):
             logger.debug("📝 verify {}/{} | {!r} -> {!r}", i, len(verify_inputs), q, a)
 
         # 3. Pairwise similarity across the verify answers.
@@ -286,6 +311,7 @@ def groundy(
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
     verify_prompt: Optional[str] = VERIFY_PROMPT,
+    concurrency: int = 2,
     cache: Optional[Cache] = None,
     on_unreliable: str = DEFAULT_REFUSAL,
 ):
@@ -307,6 +333,7 @@ def groundy(
             base_url=base_url,
             api_key=api_key,
             verify_prompt=verify_prompt,
+            concurrency=concurrency,
         )
 
         @functools.wraps(func)

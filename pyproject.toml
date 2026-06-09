@@ -17,6 +17,13 @@ dependencies = [
     "loguru>=0.7.0",
 ]
 
+# Optional similarity backends. The default `embeddings` backend (sentence-transformers)
+# is a hard dependency above; `fastembed` is an opt-in lighter engine — ONNX Runtime, no
+# torch — selected with backend="fastembed" (same all-MiniLM-L6-v2 model, ~15x lighter
+# import, so the CLI's cold start drops from ~10s to ~1-2s).
+[project.optional-dependencies]
+fastembed = ["fastembed>=0.3.0"]
+
 [project.urls]
 Repository = "https://github.com/lopoc/groundy"
 

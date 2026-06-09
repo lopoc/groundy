@@ -30,13 +30,15 @@ def cosine_similarity_batch(texts_a: List[str], texts_b: List[str]) -> List[floa
     signal (it drags the consistency score down), so scores are NOT clamped.
     """
     model = _get_model()
-    all_texts = texts_a + texts_b
-    embeddings = model.encode(all_texts, normalize_embeddings=True)
 
-    n = len(texts_a)
-    emb_a = embeddings[:n]
-    emb_b = embeddings[n:]
+    # The caller expands C(n,2) pairs into two aligned lists, so every distinct answer
+    # shows up n-1 times across them — encoding all of them is n(n-1) forward passes for
+    # only n_distinct unique strings. Embed each distinct string once; the pair scores are
+    # then just dot products of cached vectors (the encode is the cost, not the dot).
+    uniq = list(dict.fromkeys(texts_a + texts_b))
+    vectors = model.encode(uniq, normalize_embeddings=True)
+    vec = dict(zip(uniq, vectors))
 
-    # dot product of normalized vectors = cosine similarity
-    scores = (emb_a * emb_b).sum(axis=1).tolist()
-    return [float(s) for s in scores]
+    # dot product of normalized vectors = cosine similarity (not clamped: opposed answers
+    # can score negative, which is intentional signal).
+    return [float((vec[a] * vec[b]).sum()) for a, b in zip(texts_a, texts_b)]

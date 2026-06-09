@@ -22,6 +22,7 @@ import os
 import sys
 import threading
 import time
+import warnings
 
 # Quiet the embedding model's first-load chatter — huggingface_hub's "unauthenticated
 # requests" warning and its "Loading weights" progress bar — so they don't stomp on the
@@ -30,6 +31,9 @@ import time
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 os.environ.setdefault("HF_HUB_VERBOSITY", "error")
 os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+# ...and swallow the warning huggingface_hub itself raises when some library (e.g. fastembed)
+# calls enable_progress_bars() while our DISABLE env var wins — our own quieting triggers it.
+warnings.filterwarnings("ignore", message="Cannot enable progress bars")
 
 # ANSI colours, switched off when piped or when NO_COLOR is set (https://no-color.org).
 _PLAIN = bool(os.getenv("NO_COLOR")) or not sys.stdout.isatty()
@@ -51,7 +55,7 @@ BOLD, DIM, GREEN, YELLOW, RED, CYAN, GREY = (
 # 24-bit violet (#A855F7) for the histogram bars — fancier than flat ANSI magenta.
 VIOLET = "\033[38;2;168;85;247m"
 
-# One refusal string, shared by the scatter view and -q (kept in step with the library's).
+# One refusal string, shared by the matrix view and -q (kept in step with the library's).
 REFUSAL = "I'm not confident enough to answer that reliably."
 
 # --matrix view: a-z row/column labels and a 5-step shade ramp (faint = low similarity,
@@ -147,11 +151,10 @@ def _render(r, matrix: bool = False) -> None:
     else:
         print(f"  {_paint(REFUSAL, YELLOW)}\n")
 
-    # The scatter — groundy's pairwise signal, shown two ways. Default: each distinct answer
+    # The matrix — groundy's pairwise signal, shown two ways. Default: each distinct answer
     # with a bar = how much it agrees with the rest (consensus tall, outliers short). With
     # --matrix: the raw N×N heatmap, where mutually-agreeing answers light up as bright blocks
     # and the eye finds the clusters — no threshold, nothing aggregated.
-    print(f"  {_paint('scatter', DIM)}")
     if matrix:
         labels = [ALPHABET[i] for i in range(len(r.answers))]
         m = _matrix(len(r.answers), r.similarity_scores)
@@ -181,6 +184,19 @@ def main(argv: list[str] | None = None) -> int:
         "-t", "--threshold", type=float, default=0.75, help="reliable cutoff (default: 0.75)"
     )
     parser.add_argument("--model", default=None, help="reformulation model (else GROUNDY_MODEL)")
+    parser.add_argument(
+        "--backend",
+        default="fastembed",
+        help="similarity backend: fastembed (default, lighter ONNX) or embeddings "
+        "(sentence-transformers); fastembed falls back to embeddings if not installed",
+    )
+    parser.add_argument(
+        "-c",
+        "--concurrency",
+        type=int,
+        default=2,
+        help="verify answers to fetch in parallel (default: 2; 1 = sequential)",
+    )
     parser.add_argument("-q", "--quiet", action="store_true", help="print only the answer")
     parser.add_argument(
         "--matrix", action="store_true", help="show the full N×N pairwise agreement heatmap"
@@ -214,6 +230,23 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
+    # fastembed is the default (lighter, no torch), but it's an optional extra — a plain
+    # `pip install groundy` won't have it. Fall back to the always-present embeddings backend
+    # so the CLI works out of the box; suggest the extra once, on stderr, never in -q output.
+    import importlib.util
+
+    if args.backend == "fastembed" and importlib.util.find_spec("fastembed") is None:
+        if not args.quiet:
+            print(
+                _paint(
+                    "ℹ fastembed not installed — using embeddings "
+                    "(pip install 'groundy[fastembed]' for the faster backend).",
+                    GREY,
+                ),
+                file=sys.stderr,
+            )
+        args.backend = "embeddings"
+
     from loguru import logger
     from openai import OpenAI
 
@@ -236,22 +269,66 @@ def main(argv: list[str] | None = None) -> int:
     # which is when we flip to "comparing answers…". (The spinner thread reads .text each frame.)
     spinner = _Spinner("reformulating…")
     answered = 0
+    answered_lock = threading.Lock()  # verify calls may run concurrently (--concurrency)
+
+    # Background preload of the embedding model. Its cold start (~10s: torch +
+    # sentence-transformers import + weight load) is the single biggest chunk of a
+    # one-shot CLI run — bigger than all the LLM calls combined — yet it only happens
+    # because each `groundy` invocation is a fresh process. We start it now so it loads
+    # *underneath* the reformulation + verify LLM calls instead of stalling the scoring
+    # step. The thread is joined the instant the last verify answer is in (see answer_fn),
+    # i.e. just before check() scores — so the model is guaranteed resident by then and
+    # check()'s own _get_model() is a cache hit, never a second concurrent load. Best
+    # effort: a load error is swallowed here and re-raised by check()'s _get_model().
+    def _preload_model():
+        try:
+            import importlib
+
+            mod = importlib.import_module(f"groundy.backends.{args.backend}")
+            getattr(mod, "_get_model", lambda: None)()  # not every backend has one (llm_judge)
+        except Exception:  # noqa: BLE001 — warmup is best-effort; real errors surface in check()
+            pass
+
+    preloader = threading.Thread(target=_preload_model, daemon=True)
+    preloader.start()
 
     def answer_fn(q: str) -> str:
         nonlocal answered
-        if answered >= args.n:  # all n verify answers are in — this is the served call
+        # verify calls can be concurrent, so guard the shared counter. The served call is the
+        # one made after all n verify answers are in (answered == n by then).
+        with answered_lock:
+            is_served = answered >= args.n
+        if is_served:
             spinner.text = "writing the answer…"
+        # temp 0: the CLI owns this answer call, so keep it deterministic — divergence
+        # across the n "ways" is then phrasing-driven, not sampling noise.
         msg = client.chat.completions.create(
-            model=model, max_tokens=512, messages=[{"role": "user", "content": q}]
+            model=model,
+            max_tokens=512,
+            temperature=0.0,
+            messages=[{"role": "user", "content": q}],
         )
-        answered += 1
-        if answered < args.n:
-            spinner.text = f"asking {answered}/{args.n} ways…"
-        elif answered == args.n:  # last verify in — check() now scores the answers pairwise
+        with answered_lock:
+            answered += 1
+            done = answered
+        if done < args.n:
+            spinner.text = f"asking {done}/{args.n} ways…"
+        elif done == args.n:  # last verify in — check() scores the answers pairwise next
+            # Make sure the preloaded embedding model is resident before that scoring call,
+            # so it's an lru_cache hit (no second concurrent load). Usually already done; if
+            # the load ran long this blocks for its tail, hidden under one spinner tick.
             spinner.text = "comparing answers…"
+            preloader.join()
         return msg.choices[0].message.content
 
-    checker = GroundyChecker(n=args.n, threshold=args.threshold, model=model, base_url=base_url)
+    checker = GroundyChecker(
+        n=args.n,
+        threshold=args.threshold,
+        model=model,
+        base_url=base_url,
+        backend=args.backend,
+        concurrency=args.concurrency,
+    )
 
     if not args.quiet:
         print(f"\n{_paint('🌱 groundy', GREEN, BOLD)}\n\n  {_paint('?', CYAN)} {query}")
