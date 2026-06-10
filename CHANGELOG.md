@@ -2,6 +2,16 @@
 
 Notable changes to `groundy`. Pre-1.0, so the API may still shift between releases.
 
+## 0.3.0 — 2026-06-11
+
+- Added agnostic observability: pass a `tracer` to `@groundy` / `GroundyChecker` (a small
+  `Tracer` protocol, like `cache=`) and each `check()` emits a nested trace —
+  `reformulate → verify ×n → score → served`. Default `tracer=None` is a no-op (zero overhead).
+- Ships a Langfuse adapter behind the `groundy[langfuse]` extra
+  (`from groundy.observability.langfuse import LangfuseTracer`); the core imports no vendor SDK.
+  The reformulation node (the one call groundy owns) carries the model, temperature, token
+  usage, and a prompt-template hash.
+
 ## 0.2.1 — 2026-06-09
 
 - Added a `fastembed` similarity backend: the same `all-MiniLM-L6-v2` model via ONNX

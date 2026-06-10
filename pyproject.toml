@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "groundy"
-version = "0.2.1"
+version = "0.3.0"
 description = "Hallucination detection for LLMs via semantic consistency checking"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -23,6 +23,10 @@ dependencies = [
 # import, so the CLI's cold start drops from ~10s to ~1-2s).
 [project.optional-dependencies]
 fastembed = ["fastembed>=0.3.0"]
+# Observability is agnostic via the Tracer protocol (groundy/observability/__init__.py); this
+# extra ships the Langfuse adapter (groundy.observability.langfuse). The core imports no vendor
+# SDK — only the consumer imports LangfuseTracer. Needs the unified `start_observation` API.
+langfuse = ["langfuse>=3.2.0"]
 
 [project.urls]
 Repository = "https://github.com/lopoc/groundy"
@@ -34,13 +38,10 @@ groundy = "groundy.cli:main"
 # Development tooling, installed by default with `uv sync` (PEP 735).
 # python-dotenv is for the examples only (loads .env); not a runtime dep of the library.
 [dependency-groups]
-dev = ["pytest", "pytest-asyncio", "black", "ruff", "python-dotenv"]
+dev = ["pytest", "pytest-asyncio", "ruff", "python-dotenv"]
 
 # Distribution name (`groundy`) matches the package dir (`groundy`), so hatchling
 # discovers it automatically — no explicit [tool.hatch.build.targets.wheel] needed.
 
 [tool.ruff]
-line-length = 100
-
-[tool.black]
 line-length = 100

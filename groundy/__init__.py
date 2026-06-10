@@ -4,6 +4,7 @@ from importlib.metadata import PackageNotFoundError, version
 from loguru import logger
 
 from groundy.core import Cache, GroundyChecker, GroundyResult, groundy
+from groundy.observability import NoopTracer, Span, Tracer
 
 # Silent in production by default. Turn debug logging on for dev environments by
 # setting GROUNDY_DEBUG=1 (e.g. in your dev .env) — never set it in production.
@@ -13,7 +14,15 @@ if _DEBUG:
 else:
     logger.disable("groundy")
 
-__all__ = ["groundy", "GroundyChecker", "GroundyResult", "Cache"]
+__all__ = [
+    "groundy",
+    "GroundyChecker",
+    "GroundyResult",
+    "Cache",
+    "Tracer",
+    "Span",
+    "NoopTracer",
+]
 
 # Single source of truth: the version declared in pyproject.toml (read from the
 # installed package metadata), so this never drifts from the distribution.

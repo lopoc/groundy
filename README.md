@@ -29,6 +29,26 @@ trustworthy.
 uv add git+https://github.com/lopoc/groundy.git
 ```
 
+That's the full library, ready to use — the `@groundy` decorator and the local `embeddings`
+backend work out of the box, no extras needed. Two optional extras add heavier integrations
+only if you want them:
+
+| Extra | Adds | Use it for |
+|---|---|---|
+| `fastembed` | ONNX embedding backend (no torch) | ~15× lighter import (CLI cold start ~10s → ~1–2s). Select with `backend="fastembed"`. |
+| `langfuse` | Langfuse tracing adapter | Trace every check (`tracer=LangfuseTracer()`). See [Observability](#observability). |
+
+Add them in the brackets (comma-separated for several) — note the quotes and the `name @`
+prefix when you include an extra:
+
+```bash
+uv add "groundy[fastembed,langfuse] @ git+https://github.com/lopoc/groundy.git"
+```
+
+Skip the extras and nothing breaks: `fastembed` and the Langfuse SDK are imported lazily —
+only when you actually select that backend or construct the tracer — so a plain install
+never needs them.
+
 **2. Give groundy an API key, a provider, and a model name.** It makes one call of its own
 - reformulation, over any OpenAI-compatible API - all under its own `GROUNDY_*` namespace:
 
@@ -223,6 +243,7 @@ Fireworks, and local servers (vLLM, llama.cpp, Ollama).
 | `api_key` | `None` | `None` → `GROUNDY_API_KEY` (may be unset for keyless local servers). |
 | `verify_prompt` | *(terse instruction)* | Prepended to the verify answers (not the served one). `None` verifies with your raw answers. |
 | `cache` | `None` | Any object with `get`/`set`. Runs groundy only on a miss. |
+| `tracer` | `None` | Any object with the `Tracer` protocol. Emits a nested trace per check. Langfuse adapter in `groundy[langfuse]`. |
 | `on_unreliable` | *(a refusal)* | Returned/cached when the model disagrees with itself. |
 
 ## Honest limits - read this
@@ -243,9 +264,29 @@ groundy measures **self-consistency, not correctness.** Know the failure modes:
 
 ## Observability
 
-None built in - by design. You have the full `GroundyResult`; log it however you already do
-(`my_tracer.log(consistency=r.consistency_score, reliable=r.is_reliable)`). For dev, set
-`GROUNDY_DEBUG=1` to print reformulations, answers, and scores.
+Optional and agnostic. Pass a `tracer` (a tiny `Tracer` protocol, just like `cache=`) and
+every `check()` emits a nested trace: `reformulate → verify ×n → score → served`. Default
+`tracer=None` → no tracing, zero overhead.
+
+A Langfuse adapter ships in the box — add the `langfuse` extra:
+
+```bash
+uv add "groundy[langfuse] @ git+https://github.com/lopoc/groundy.git"
+```
+
+```python
+from groundy.observability.langfuse import LangfuseTracer
+
+@groundy(tracer=LangfuseTracer())   # reads LANGFUSE_* from the env
+def ask(q: str) -> str:
+    ...
+```
+
+The core imports no vendor SDK - only you import the adapter. groundy owns one LLM call
+(reformulation), so that node carries the model, temperature, token usage, and a prompt hash;
+the `answer_fn` nodes show text + timing only. Prefer to log it yourself? The full
+`GroundyResult` is still right there. For dev, `GROUNDY_DEBUG=1` prints reformulations,
+answers, and scores.
 
 ## Develop
 
@@ -256,7 +297,7 @@ uv sync                              # creates .venv, installs runtime + dev too
 
 uv run python examples/basic.py      # smoke test (needs GROUNDY_API_KEY + GROUNDY_MODEL)
 uv run ruff check groundy            # lint
-uv run black groundy                 # format
+uv run ruff format groundy           # format
 uv run pytest                        # tests (once a tests/ dir exists)
 ```
 
