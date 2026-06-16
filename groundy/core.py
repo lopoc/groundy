@@ -12,6 +12,7 @@ rich-result door underneath it.
 from __future__ import annotations
 
 import functools
+import hashlib
 import itertools
 import json
 import os
@@ -23,6 +24,7 @@ from typing import Callable, Optional, Protocol, runtime_checkable
 from loguru import logger
 from openai import OpenAI
 
+from groundy.observability import NoopTracer, Span, Tracer
 from groundy.prompts import REFORMULATION_SYSTEM, REFORMULATION_USER
 
 # groundy makes ONE LLM call of its own — reformulation, over an OpenAI-compatible API. It
@@ -32,6 +34,13 @@ from groundy.prompts import REFORMULATION_SYSTEM, REFORMULATION_USER
 
 # Reformulations use temperature 0 so the rephrasings are stable across runs.
 TEMPERATURE = 0.0
+
+# Stable fingerprint of the reformulation prompt templates. Emitted on the traced
+# `reformulate` generation so you can tell which prompt version produced a run — it changes
+# the moment either template is edited. Computed once (the templates are constant).
+REFORMULATION_PROMPT_HASH = hashlib.sha256(
+    f"{REFORMULATION_SYSTEM}\n{REFORMULATION_USER}".encode()
+).hexdigest()[:12]
 
 # Returned (and cached) in place of an answer when the model disagrees with itself.
 DEFAULT_REFUSAL = "I'm not confident enough to answer that reliably."
@@ -43,6 +52,21 @@ VERIFY_PROMPT = (
     "Answer as briefly as possible — just the answer itself, "
     "with no explanation, no caveats, and no preamble."
 )
+
+
+def _token_usage(response) -> Optional[dict]:
+    """Pull a ``{input, output, total}`` token-count dict off an OpenAI-style response, or
+    ``None`` if the provider omitted usage (some keyless/local servers do)."""
+    u = getattr(response, "usage", None)
+    if u is None:
+        return None
+    counts = {
+        "input": getattr(u, "prompt_tokens", None),
+        "output": getattr(u, "completion_tokens", None),
+        "total": getattr(u, "total_tokens", None),
+    }
+    counts = {k: v for k, v in counts.items() if v is not None}
+    return counts or None
 
 
 @runtime_checkable
@@ -109,6 +133,10 @@ class GroundyChecker:
     concurrency : how many of the n verify ``answer_fn`` calls run at once (default 2; 1 =
         sequential). They're independent, so this cuts wall-clock; the served call stays
         sequential. ``answer_fn`` must be thread-safe when > 1 (a plain LLM/HTTP call is).
+    tracer : optional :class:`~groundy.observability.Tracer`; ``check()`` emits a nested
+        trace (reformulation + each verify answer + scoring + the served answer) to it.
+        ``None`` (default) uses a no-op tracer — zero overhead. Ship a Langfuse tracer with
+        ``groundy[langfuse]``; the core imports no vendor SDK.
     """
 
     def __init__(
@@ -122,6 +150,7 @@ class GroundyChecker:
         api_key: Optional[str] = None,
         verify_prompt: Optional[str] = VERIFY_PROMPT,
         concurrency: int = 2,
+        tracer: Optional[Tracer] = None,
     ):
         if n < 2:
             raise ValueError(f"n must be >= 2 (need 2+ answers to compare), got {n}.")
@@ -138,6 +167,8 @@ class GroundyChecker:
         self.base_url = base_url or os.getenv("GROUNDY_BASE_URL")
         self.api_key = api_key or os.getenv("GROUNDY_API_KEY")
         self.verify_prompt = verify_prompt
+        # No-op when unset, so check() can drive the tracer unconditionally (no `if`s).
+        self.tracer: Tracer = tracer or NoopTracer()
 
         # The reformulation call needs a model and a provider — no defaults, name them.
         if not self.model:
@@ -162,8 +193,7 @@ class GroundyChecker:
 
             return judge_similarity_batch
         raise ValueError(
-            f"Unknown backend: {backend!r}. "
-            "Use 'embeddings', 'fastembed', or 'llm_judge'."
+            f"Unknown backend: {backend!r}. Use 'embeddings', 'fastembed', or 'llm_judge'."
         )
 
     # ------------------------------------------------------------------
@@ -188,73 +218,104 @@ class GroundyChecker:
         )
         logger.debug("💬 query | {!r}", query)
 
-        # 1. Reformulate the query n-1 times.
-        reformulations = self._generate_reformulations(query)
+        with self.tracer.trace(
+            "groundy.check",
+            input=query,
+            metadata={"n": self.n, "threshold": self.threshold, "backend": self.backend},
+        ) as root:
+            # 1. Reformulate the query n-1 times.
+            reformulations = self._generate_reformulations(query, root)
 
-        # 2. Verify answers — terse, so consistency is about substance, not phrasing. The n
-        # calls are independent, so run up to self.concurrency at once (order preserved, so
-        # answers[i] stays aligned to verify_inputs[i] for the pairwise indexing below).
-        verify_inputs = [query] + reformulations
+            # 2. Verify answers — terse, so consistency is about substance, not phrasing. The n
+            # calls are independent, so run up to self.concurrency at once (order preserved, so
+            # answers[i] stays aligned to verify_inputs[i] for the pairwise indexing below).
+            verify_inputs = [query] + reformulations
 
-        def _verify(q: str) -> str:
-            vq = f"{self.verify_prompt}\n\n{q}" if self.verify_prompt else q
-            return answer_fn(vq)
+            def _verify(q: str) -> str:
+                vq = f"{self.verify_prompt}\n\n{q}" if self.verify_prompt else q
+                with root.span("verify", kind="generation", input=vq) as gen:
+                    answer = answer_fn(vq)
+                    gen.end(output=answer)
+                return answer
 
-        if self.concurrency > 1 and len(verify_inputs) > 1:
-            with ThreadPoolExecutor(max_workers=self.concurrency) as pool:
-                answers = list(pool.map(_verify, verify_inputs))
-        else:
-            answers = [_verify(q) for q in verify_inputs]
+            if self.concurrency > 1 and len(verify_inputs) > 1:
+                with ThreadPoolExecutor(max_workers=self.concurrency) as pool:
+                    answers = list(pool.map(_verify, verify_inputs))
+            else:
+                answers = [_verify(q) for q in verify_inputs]
 
-        for i, (q, a) in enumerate(zip(verify_inputs, answers), start=1):
-            logger.debug("📝 verify {}/{} | {!r} -> {!r}", i, len(verify_inputs), q, a)
+            for i, (q, a) in enumerate(zip(verify_inputs, answers), start=1):
+                logger.debug("📝 verify {}/{} | {!r} -> {!r}", i, len(verify_inputs), q, a)
 
-        # 3. Pairwise similarity across the verify answers.
-        index_pairs = list(itertools.combinations(range(len(answers)), 2))
-        similarity_scores = self._similarity_fn(
-            [answers[i] for i, _ in index_pairs],
-            [answers[j] for _, j in index_pairs],
-        )
+            # 3-5. Score: pairwise similarity → consistency → consensus (all derived, no I/O).
+            with root.span("score", kind="span") as score_span:
+                index_pairs = list(itertools.combinations(range(len(answers)), 2))
+                similarity_scores = self._similarity_fn(
+                    [answers[i] for i, _ in index_pairs],
+                    [answers[j] for _, j in index_pairs],
+                )
 
-        # 4. Consistency = mean pairwise similarity; reliable if it clears the threshold.
-        consistency_score = (
-            sum(similarity_scores) / len(similarity_scores) if similarity_scores else 0.0
-        )
-        is_reliable = consistency_score >= self.threshold
+                # Consistency = mean pairwise similarity; reliable if it clears the threshold.
+                consistency_score = (
+                    sum(similarity_scores) / len(similarity_scores) if similarity_scores else 0.0
+                )
+                is_reliable = consistency_score >= self.threshold
 
-        # 5. Consensus (medoid) verify answer — the one agreeing most. Diagnostic only.
-        agreement_scores = self._agreement_scores(len(answers), index_pairs, similarity_scores)
-        consensus_index = (
-            max(range(len(answers)), key=agreement_scores.__getitem__) if answers else 0
-        )
-        consensus_answer = answers[consensus_index] if answers else ""
+                # Consensus (medoid) verify answer — the one agreeing most. Diagnostic only.
+                agreement_scores = self._agreement_scores(
+                    len(answers), index_pairs, similarity_scores
+                )
+                consensus_index = (
+                    max(range(len(answers)), key=agreement_scores.__getitem__) if answers else 0
+                )
+                consensus_answer = answers[consensus_index] if answers else ""
+                score_span.end(
+                    output=consistency_score,
+                    metadata={
+                        "is_reliable": is_reliable,
+                        "similarity_scores": similarity_scores,
+                        "agreement_scores": agreement_scores,
+                    },
+                )
 
-        verdict = "✅ reliable" if is_reliable else "⚠️ uncertain"
-        logger.debug("📊 result | consistency={:.3f} {}", consistency_score, verdict)
+            verdict = "✅ reliable" if is_reliable else "⚠️ uncertain"
+            logger.debug("📊 result | consistency={:.3f} {}", consistency_score, verdict)
 
-        # 6. Served answer — produced last and only if reliable (else we'd discard it).
-        if is_reliable:
-            original_answer = answer_fn(query)
-            logger.debug("📤 served | {!r}", original_answer)
-        else:
-            original_answer = ""
-            logger.debug("⏭️ served skipped — uncertain")
+            # 6. Served answer — produced last and only if reliable (else we'd discard it).
+            if is_reliable:
+                with root.span("served", kind="generation", input=query) as gen:
+                    original_answer = answer_fn(query)
+                    gen.end(output=original_answer)
+                logger.debug("📤 served | {!r}", original_answer)
+            else:
+                original_answer = ""
+                logger.debug("⏭️ served skipped — uncertain")
 
-        return GroundyResult(
-            original_query=query,
-            original_answer=original_answer,
-            reformulations=reformulations,
-            answers=answers,
-            similarity_scores=similarity_scores,
-            consistency_score=consistency_score,
-            is_reliable=is_reliable,
-            threshold=self.threshold,
-            backend=self.backend,
-            latency_ms=(time.monotonic() - t0) * 1000,
-            consensus_answer=consensus_answer,
-            consensus_index=consensus_index,
-            agreement_scores=agreement_scores,
-        )
+            latency_ms = (time.monotonic() - t0) * 1000
+            root.end(
+                output=original_answer if is_reliable else None,
+                metadata={
+                    "consistency_score": consistency_score,
+                    "is_reliable": is_reliable,
+                    "latency_ms": latency_ms,
+                },
+            )
+
+            return GroundyResult(
+                original_query=query,
+                original_answer=original_answer,
+                reformulations=reformulations,
+                answers=answers,
+                similarity_scores=similarity_scores,
+                consistency_score=consistency_score,
+                is_reliable=is_reliable,
+                threshold=self.threshold,
+                backend=self.backend,
+                latency_ms=latency_ms,
+                consensus_answer=consensus_answer,
+                consensus_index=consensus_index,
+                agreement_scores=agreement_scores,
+            )
 
     @staticmethod
     def _agreement_scores(n, index_pairs, similarity_scores):
@@ -267,8 +328,12 @@ class GroundyChecker:
             sums[j] += s
         return [sums[k] / (n - 1) for k in range(n)]
 
-    def _generate_reformulations(self, query: str) -> list[str]:
-        """Ask the model for n-1 semantically equivalent rephrasings (a JSON array)."""
+    def _generate_reformulations(self, query: str, span: Span) -> list[str]:
+        """Ask the model for n-1 semantically equivalent rephrasings (a JSON array).
+
+        This is the one LLM call groundy owns, so it's the only traced node carrying token
+        ``usage``; ``span`` is the parent under which the ``reformulate`` generation is opened.
+        """
         if self._client is None:
             self._client = OpenAI(base_url=self.base_url, api_key=self.api_key)
 
@@ -287,13 +352,31 @@ class GroundyChecker:
         if self.temperature is not None:
             kwargs["temperature"] = self.temperature
 
-        raw = self._client.chat.completions.create(**kwargs).choices[0].message.content.strip()
+        gen = span.span(
+            "reformulate",
+            kind="generation",
+            input=query,
+            model=self.model,
+            model_parameters=(
+                {"temperature": self.temperature} if self.temperature is not None else None
+            ),
+            metadata={"prompt_hash": REFORMULATION_PROMPT_HASH},
+        )
+        try:
+            response = self._client.chat.completions.create(**kwargs)
+        except Exception as exc:  # surface the failure on the span, then re-raise
+            gen.end(metadata={"error": str(exc)})
+            raise
+
+        raw = response.choices[0].message.content.strip()
         # Strip a ```json fence if the model added one.
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):
                 raw = raw[4:]
-        return json.loads(raw.strip())
+        reformulations = json.loads(raw.strip())
+        gen.end(output=reformulations, usage=_token_usage(response))
+        return reformulations
 
 
 # ------------------------------------------------------------------
@@ -313,6 +396,7 @@ def groundy(
     api_key: Optional[str] = None,
     verify_prompt: Optional[str] = VERIFY_PROMPT,
     concurrency: int = 2,
+    tracer: Optional[Tracer] = None,
     cache: Optional[Cache] = None,
     on_unreliable: str = DEFAULT_REFUSAL,
 ):
@@ -335,6 +419,7 @@ def groundy(
             api_key=api_key,
             verify_prompt=verify_prompt,
             concurrency=concurrency,
+            tracer=tracer,
         )
 
         @functools.wraps(func)
