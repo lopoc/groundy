@@ -55,9 +55,6 @@ BOLD, DIM, GREEN, YELLOW, RED, CYAN, GREY = (
 # 24-bit violet (#A855F7) for the histogram bars — fancier than flat ANSI magenta.
 VIOLET = "\033[38;2;168;85;247m"
 
-# One refusal string, shared by the matrix view and -q (kept in step with the library's).
-REFUSAL = "I'm not confident enough to answer that reliably."
-
 # --matrix view: a-z row/column labels and a 5-step shade ramp (faint = low similarity,
 # solid = high), so the pairwise agreement structure reads as bright blocks.
 ALPHABET = "abcdefghijklmnopqrstuvwxyz"
@@ -138,7 +135,7 @@ def _cell(s: float) -> str:
     return RAMP[round(max(0.0, min(1.0, s)) * (len(RAMP) - 1))] * 2
 
 
-def _render(r, matrix: bool = False) -> None:
+def _render(r, refusal: str, matrix: bool = False) -> None:
     """Pretty-print a GroundyResult: verdict, answer, then the agreement scatter (or matrix)."""
     ok = r.is_reliable
     mark = _paint("✓ reliable", GREEN, BOLD) if ok else _paint("⚠ uncertain", YELLOW, BOLD)
@@ -149,7 +146,7 @@ def _render(r, matrix: bool = False) -> None:
     if ok:
         print(f"  {_paint(r.best_answer, BOLD)}\n")
     else:
-        print(f"  {_paint(REFUSAL, YELLOW)}\n")
+        print(f"  {_paint(refusal, YELLOW)}\n")
 
     # The matrix — groundy's pairwise signal, shown two ways. Default: each distinct answer
     # with a bar = how much it agrees with the rest (consensus tall, outliers short). With
@@ -252,6 +249,7 @@ def main(argv: list[str] | None = None) -> int:
     from openai import OpenAI
 
     from groundy import GroundyChecker
+    from groundy.core import DEFAULT_REFUSAL as refusal  # one source of truth for the string
 
     # The CLI renders its own output, so groundy's debug log would just be noise — keep it
     # off even if GROUNDY_DEBUG=1 is set in the env, unless --debug explicitly asks for it.
@@ -342,9 +340,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.quiet:
-        print(result.best_answer if result.is_reliable else REFUSAL)
+        print(result.best_answer if result.is_reliable else refusal)
     else:
-        _render(result, args.matrix)
+        _render(result, refusal, args.matrix)
     return 0
 
 
