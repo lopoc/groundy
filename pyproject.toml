@@ -8,8 +8,23 @@ version = "0.3.0"
 description = "Hallucination detection for LLMs via semantic consistency checking"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Lorenzo 'lopoc' Cococcia" }]
 keywords = ["llm", "hallucination", "ai", "agents", "semantic-cache", "openai"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
 
 dependencies = [
     "openai>=1.0.0",
@@ -29,7 +44,10 @@ fastembed = ["fastembed>=0.3.0"]
 langfuse = ["langfuse>=3.2.0"]
 
 [project.urls]
+Homepage = "https://github.com/lopoc/groundy"
 Repository = "https://github.com/lopoc/groundy"
+Issues = "https://github.com/lopoc/groundy/issues"
+Changelog = "https://github.com/lopoc/groundy/blob/main/CHANGELOG.md"
 
 # A tiny terminal vibe-check: `groundy "your question"`.
 [project.scripts]
